@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CRM Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--bg:#f4f6fa;--c:#fff;--t:#1d2433;--m:#6b7488;--p:#2f5bea;--b:#e1e5ee}
+*{box-sizing:border-box}body{margin:0;font:14px system-ui,sans-serif;background:var(--bg);color:var(--t)}
+header{background:#14213d;color:#fff;padding:14px 20px}h1{margin:0;font-size:20px}
+main{padding:16px 20px;max-width:1500px;margin:auto}
+.card{background:var(--c);border:1px solid var(--b);border-radius:10px;padding:14px;margin-bottom:16px}
+h2{font-size:15px;margin:0 0 10px}
+.tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.tabs button{padding:9px 16px;border:1px solid var(--b);background:#fff;border-radius:8px;cursor:pointer;font-weight:600}
+.tabs button.on{background:var(--p);color:#fff;border-color:var(--p)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+label{font-size:12px;color:var(--m);display:flex;flex-direction:column;gap:3px}
+select,input{padding:6px 8px;border:1px solid var(--b);border-radius:6px;font-size:13px;min-width:120px}
+button.a{padding:7px 14px;background:var(--p);color:#fff;border:0;border-radius:6px;cursor:pointer}
+.kpis{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.kpi{background:#fff;border:1px solid var(--b);border-radius:10px;padding:10px 16px;min-width:140px}
+.kpi b{display:block;font-size:22px;color:var(--p)}.kpi span{font-size:12px;color:var(--m)}
+.sc{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:6px 10px;border-bottom:1px solid var(--b);text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:#fff}
+th{background:#eef1f8;font-size:12px}tr.tot td{font-weight:700;background:#f4f6fa}
+.msg{font-size:12px;color:var(--m);margin-top:8px}.err{color:#c0392b}
+details summary{cursor:pointer;color:var(--p);font-size:13px;margin-top:8px}
+</style></head><body>
+<header><h1>CRM Dashboard</h1></header>
+<main>
+<div class="card"><h2>Data source</h2>
+<div class="row">
+<label>Offline Leads gid<input id="g_btl" value="0"></label>
+<label>Digital Leads gid<input id="g_nik" placeholder="e.g. 123456789"></label>
+<button class="a" onclick="loadSheet()">Load from Google Sheet</button>
+<label>Or upload Offline Leads (csv/xlsx)<input type="file" id="f_btl" accept=".csv,.xlsx,.xls"></label>
+<label>Or upload Digital Leads (csv/xlsx)<input type="file" id="f_nik" accept=".csv,.xlsx,.xls"></label>
+</div>
+<div class="msg" id="status">gid = number after "gid=" in the browser URL when that sheet is open.</div>
+<details><summary>Column mapping (auto-detected, change if wrong)</summary><div class="row" id="map" style="margin-top:8px"></div></details>
+</div>
+
+<div class="tabs" id="tabs">
+<button data-t="btl" class="on">Offline Leads</button>
+<button data-t="nik">Digital Leads</button>
+<button data-t="all">Final Report (Offline + Digital)</button></div>
+
+<div class="card"><h2>Filters (by User Registration date)</h2><div class="row">
+<label>Quick<select id="q"><option value="">All</option><option value="today">Today</option><option value="yesterday">Yesterday</option><option value="thisweek">This week</option><option value="lastweek">Last week</option><option value="thismonth">Current month</option></select></label>
+<label>Date<select id="fd"></select></label>
+<label>Week<select id="fw"></select></label>
+<label>Month<select id="fm"></select></label>
+<label>Year<select id="fy"></select></label>
+<label>Lead owner<select id="fo"></select></label>
+<button class="a" onclick="resetF()">Reset</button></div></div>
+
+<div class="kpis" id="kpis"></div>
+<div id="out"></div>
+</main>
+<script>
+const KEY="2PACX-1vToiYHVT7kgStYbZgL2G-5jlDgjfP_DnhC3OBArYEWNhLU8Ohp5qH9C1L9-yl-WEH2cuqheZ3kzqjYy";
+const NAMES={btl:"Offline Leads",nik:"Digital Leads"};
+const raw={btl:{h:[],r:[]},nik:{h:[],r:[]}},map={btl:{},nik:{}};
+let tab="btl";const $=i=>document.getElementById(i);
+const pad=n=>String(n).padStart(2,"0");
+const dk=d=>d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
+const mk=d=>d.getFullYear()+"-"+pad(d.getMonth()+1);
+const mon=d=>{const x=new Date(d.getFullYear(),d.getMonth(),d.getDate());x.setDate(x.getDate()-((x.getDay()+6)%7));return x};
+const wk=d=>dk(mon(d));
+const MN=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const mlab=k=>MN[+k.slice(5)-1]+" "+k.slice(0,4);
+const wlab=k=>{const e=new Date(k+"T00:00");e.setDate(e.getDate()+6);const f=d=>d.getDate()+" "+MN[d.getMonth()];return f(new Date(k+"T00:00"))+" - "+f(e)};
+
+function parseCSV(t){const R=[];let r=[],c="",q=false;for(let i=0;i<t.length;i++){const ch=t[i];
+if(q){if(ch=='"'){if(t[i+1]=='"'){c+='"';i++}else q=false}else c+=ch}
+else if(ch=='"')q=true;else if(ch==","){r.push(c);c=""}
+else if(ch=="\n"||ch=="\r"){if(ch=="\r"&&t[i+1]=="\n")i++;r.push(c);c="";R.push(r);r=[]}else c+=ch}
+if(c||r.length){r.push(c);R.push(r)}return R.filter(x=>x.some(v=>v.trim()))}
+function pDate(v){if(v==null||v==="")return null;if(v instanceof Date)return isNaN(v)?null:v;
+if(typeof v==="number"){return new Date(Math.round((v-25569)*864e5)+new Date().getTimezoneOffset()*6e4)}
+const s=String(v).trim();let m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/);
+if(m)return new Date(+m[3],+m[2]-1,+m[1]);
+m=s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);if(m)return new Date(+m[1],+m[2]-1,+m[3]);
+const d=new Date(s);return isNaN(d)?null:d}
+
+function setData(k,rows){if(!rows.length)return;raw[k].h=rows[0].map(x=>String(x).trim());raw[k].r=rows.slice(1);autoMap(k);buildMap();render()}
+function autoMap(k){const h=raw[k].h,f=re=>h.findIndex(x=>re.test(x));
+const sub=f(/sub.?stage|sub.?status/i);
+let st=h.findIndex((x,i)=>/stage/i.test(x)&&i!==sub);
+let dt=f(/regist/i);if(dt<0)dt=f(/created|date/i);
+let ow=f(/lead.*owner|owner|assigned/i);
+map[k]={o:ow,s:st,u:sub,d:dt}}
+function buildMap(){let h="";for(const k of["btl","nik"]){const hs=raw[k].h;if(!hs.length)continue;
+for(const[f,l]of[["o","Lead owner"],["s","Lead stage"],["u","Lead substage"],["d","Registration date"]])
+h+=`<label>${NAMES[k]}: ${l}<select onchange="map['${k}'].${f}=+this.value;render()">${hs.map((x,i)=>`<option value="${i}" ${map[k][f]==i?"selected":""}>${x}</option>`).join("")}</select></label>`}
+$("map").innerHTML=h}
+
+async function loadSheet(){const st=$("status");st.className="msg";st.textContent="Loading...";
+try{for(const k of["btl","nik"]){const g=$("g_"+k).value.trim();if(!g&&k=="nik")continue;
+const u=`https://docs.google.com/spreadsheets/d/e/${KEY}/pub?output=csv&gid=${g||0}`;
+const r=await fetch(u);if(!r.ok)throw new Error("HTTP "+r.status);setData(k,parseCSV(await r.text()))}
+st.textContent="Loaded "+raw.btl.r.length+" offline and "+raw.nik.r.length+" digital leads."}
+catch(e){st.className="msg err";st.textContent="Could not load from Google ("+e.message+"). Download each tab as CSV/XLSX and use the upload boxes."}}
+for(const k of["btl","nik"])$("f_"+k).onchange=async e=>{const f=e.target.files[0];if(!f)return;
+if(/\.csv$/i.test(f.name)){setData(k,parseCSV(await f.text()))}
+else{const wb=XLSX.read(await f.arrayBuffer(),{cellDates:true});
+const nm=wb.SheetNames.find(n=>new RegExp(k=="btl"?"btl":"nikhil","i").test(n))||wb.SheetNames[0];
+setData(k,XLSX.utils.sheet_to_json(wb.Sheets[nm],{header:1,raw:true,defval:""}))}
+$("status").textContent=NAMES[k]+" loaded: "+raw[k].r.length+" rows."};
+
+function recs(k){const m=map[k];return raw[k].r.map(r=>({o:(String(r[m.o]??"").trim())||"Unassigned",s:(String(r[m.s]??"").trim())||"(blank)",u:String(r[m.u]??"").trim(),d:pDate(r[m.d]),src:k}))}
+function base(){return tab=="all"?recs("btl").concat(recs("nik")):recs(tab)}
+
+function fill(id,vals,lab){const el=$(id),cur=el.value;el.innerHTML='<option value="">All</option>'+vals.map(v=>`<option value="${v}">${lab?lab(v):v}</option>`).join("");if(vals.includes(cur))el.value=cur}
+const uniq=a=>[...new Set(a)].sort();
+function resetF(){["q","fd","fw","fm","fy","fo"].forEach(i=>$(i).value="");render()}
+function filt(a){const q=$("q").value,now=new Date(),td=dk(now),yd=dk(new Date(now.getFullYear(),now.getMonth(),now.getDate()-1));
+const tw=wk(now),lw=wk(new Date(mon(now).getTime()-7*864e5)),tm=mk(now);
+const v=i=>$(i).value;
+return a.filter(x=>{if(v("fo")&&x.o!=v("fo"))return false;const d=x.d;
+if(q||v("fd")||v("fw")||v("fm")||v("fy")){if(!d)return false;
+if(q=="today"&&dk(d)!=td)return false;if(q=="yesterday"&&dk(d)!=yd)return false;
+if(q=="thisweek"&&wk(d)!=tw)return false;if(q=="lastweek"&&wk(d)!=lw)return false;
+if(q=="thismonth"&&mk(d)!=tm)return false;
+if(v("fd")&&dk(d)!=v("fd"))return false;if(v("fw")&&wk(d)!=v("fw"))return false;
+if(v("fm")&&mk(d)!=v("fm"))return false;if(v("fy")&&String(d.getFullYear())!=v("fy"))return false}
+return true})}
+
+function pivot(a,rowF,colF,cols,colLab,title){
+const rows=uniq(a.map(rowF));if(!rows.length)return"<div class='msg'>No data</div>";
+const M={};a.forEach(x=>{const c=colF(x);if(c==null)return;(M[rowF(x)]??={})[c]=(M[rowF(x)][c]||0)+1});
+const ct={};let h="<div class='sc'><table><tr><th>"+title+"</th>"+cols.map(c=>`<th>${colLab?colLab(c):c}</th>`).join("")+"<th>Total</th></tr>",g=0;
+rows.forEach(r=>{let t=0;h+=`<tr><td>${r}</td>`+cols.map(c=>{const n=(M[r]||{})[c]||0;t+=n;ct[c]=(ct[c]||0)+n;return`<td>${n||"-"}</td>`}).join("")+`<td><b>${t}</b></td></tr>`;g+=t});
+return h+`<tr class="tot"><td>Total</td>`+cols.map(c=>`<td>${ct[c]||0}</td>`).join("")+`<td>${g}</td></tr></table></div>`}
+
+function periods(a,pred){const now=new Date(),tw=wk(now),tm=mk(now);
+const A=a.filter(pred);
+const set=[["This week",x=>x.d&&wk(x.d)==tw],["This month",x=>x.d&&mk(x.d)==tm],["Till now",x=>true]];
+const rows=uniq(A.map(x=>x.o));if(!rows.length)return"<div class='msg'>No data</div>";
+const tot=[0,0,0];let h="<div class='sc'><table><tr><th>Lead owner</th>"+set.map(s=>`<th>${s[0]}</th>`).join("")+"</tr>";
+rows.forEach(r=>{h+=`<tr><td>${r}</td>`+set.map((s,i)=>{const n=A.filter(x=>x.o==r&&s[1](x)).length;tot[i]+=n;return`<td>${n||"-"}</td>`}).join("")+"</tr>"});
+return h+`<tr class="tot"><td>Total</td>${tot.map(n=>`<td>${n}</td>`).join("")}</tr></table></div>`}
+
+const card=(t,b)=>`<div class="card"><h2>${t}</h2>${b}</div>`;
+function render(){if(!raw[tab=="all"?"btl":tab].h.length&&!(tab=="all"&&raw.nik.h.length)){$("out").innerHTML=card("No data yet","<div class='msg'>Load the sheet or upload the files above.</div>");$("kpis").innerHTML="";return}
+const all=base(),d=all.filter(x=>x.d);
+fill("fd",uniq(d.map(x=>dk(x.d))).reverse());fill("fw",uniq(d.map(x=>wk(x.d))).reverse(),wlab);
+fill("fm",uniq(d.map(x=>mk(x.d))).reverse(),mlab);fill("fy",uniq(d.map(x=>String(x.d.getFullYear()))).reverse());
+fill("fo",uniq(all.map(x=>x.o)));
+const a=filt(all),isV=x=>/visit\s*sched/i.test(x.u);
+const stages=uniq(a.map(x=>x.s)),weeks=uniq(a.filter(x=>x.d).map(x=>wk(x.d))),months=uniq(a.filter(x=>x.d).map(x=>mk(x.d)));
+const title=tab=="all"?"Final Report: Offline + Digital Leads":NAMES[tab];
+$("kpis").innerHTML=[["Total leads",a.length],["Lead owners",new Set(a.map(x=>x.o)).size],["Site visits scheduled",a.filter(isV).length]]
+.concat(tab=="all"?[["Offline",a.filter(x=>x.src=="btl").length],["Digital",a.filter(x=>x.src=="nik").length]]:[])
+.map(k=>`<div class="kpi"><b>${k[1]}</b><span>${k[0]}</span></div>`).join("");
+let h=`<h2 style="margin:0 0 12px">${title}</h2>`;
+if(tab=="all")h+=card("Source summary: Offline vs Digital by lead owner",pivot(a,x=>x.o,x=>x.src=="btl"?"Offline Leads":"Digital Leads",["Offline Leads","Digital Leads"],null,"Lead owner"));
+h+=card("1. Lead owner wise lead stages",pivot(a,x=>x.o,x=>x.s,stages,null,"Lead owner"));
+h+=card("2. Lead owner wise weekly leads",pivot(a,x=>x.o,x=>x.d?wk(x.d):null,weeks,wlab,"Lead owner"));
+h+=card("3. Lead owner wise monthly leads",pivot(a,x=>x.o,x=>x.d?mk(x.d):null,months,mlab,"Lead owner"));
+h+=card("4. Lead owner wise leads: weekly, monthly and till now",periods(all,()=>true)+"<div class='msg'>Uses all leads of this view (date filters not applied).</div>");
+h+=card("5. Lead owner wise site visits scheduled: weekly, monthly and till now",periods(all,isV)+"<div class='msg'>Lead substage = Visit Scheduled.</div>");
+$("out").innerHTML=h}
+document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#tabs button").forEach(x=>x.classList.remove("on"));b.classList.add("on");tab=b.dataset.t;render()});
+["q","fd","fw","fm","fy","fo"].forEach(i=>$(i).onchange=render);
+render();
+</script></body></html>
